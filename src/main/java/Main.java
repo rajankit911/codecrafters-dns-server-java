@@ -3,6 +3,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.BitSet;
 
 public class Main {
@@ -23,10 +24,16 @@ public class Main {
                 BitSet field_QR_OPCODE_AA_TC_RD = new BitSet(8);
                 field_QR_OPCODE_AA_TC_RD.set(7);
                 byte field_RA_Z_RCODE = 0;
-                short field_QDCOUNT = 0;
+                short field_QDCOUNT = 1;
                 short field_ANCOUNT = 0;
                 short field_NSCOUNT = 0;
                 short field_ARCOUNT = 0;
+
+                String secondLevelDomain = "codecrafters";
+                String topLevelDomain = "io";
+
+                short field_TYPE = 1;
+                short field_CLASS = 1;
 
                 final byte[] bufResponse = ByteBuffer.allocate(512)
                         .order(ByteOrder.BIG_ENDIAN)
@@ -37,7 +44,15 @@ public class Main {
                         .putShort(field_ANCOUNT)
                         .putShort(field_NSCOUNT)
                         .putShort(field_ARCOUNT)
+                        .put((byte) secondLevelDomain.length())
+                        .put(secondLevelDomain.getBytes(StandardCharsets.UTF_8))
+                        .put((byte) topLevelDomain.length())
+                        .put(topLevelDomain.getBytes(StandardCharsets.UTF_8))
+                        .put((byte) 0)
+                        .putShort(field_TYPE)
+                        .putShort(field_CLASS)
                         .array();
+
                 final DatagramPacket packetResponse = new DatagramPacket(bufResponse, bufResponse.length, packet.getSocketAddress());
                 serverSocket.send(packetResponse);
             }
