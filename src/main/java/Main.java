@@ -1,6 +1,9 @@
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.BitSet;
 
 public class Main {
     public static void main(String[] args) {
@@ -16,7 +19,25 @@ public class Main {
                 serverSocket.receive(packet);
                 System.out.println("Received data");
 
-                final byte[] bufResponse = new byte[512];
+                short field_ID = 1234;
+                BitSet field_QR_OPCODE_AA_TC_RD = new BitSet(8);
+                field_QR_OPCODE_AA_TC_RD.set(7);
+                byte field_RA_Z_RCODE = 0;
+                short field_QDCOUNT = 0;
+                short field_ANCOUNT = 0;
+                short field_NSCOUNT = 0;
+                short field_ARCOUNT = 0;
+
+                final byte[] bufResponse = ByteBuffer.allocate(512)
+                        .order(ByteOrder.BIG_ENDIAN)
+                        .putShort(field_ID)
+                        .put(field_QR_OPCODE_AA_TC_RD.toByteArray()[0])
+                        .put(field_RA_Z_RCODE)
+                        .putShort(field_QDCOUNT)
+                        .putShort(field_ANCOUNT)
+                        .putShort(field_NSCOUNT)
+                        .putShort(field_ARCOUNT)
+                        .array();
                 final DatagramPacket packetResponse = new DatagramPacket(bufResponse, bufResponse.length, packet.getSocketAddress());
                 serverSocket.send(packetResponse);
             }
