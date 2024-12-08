@@ -3,7 +3,9 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.ShortBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.BitSet;
 
 public class Main {
     public static void main(String[] args) {
@@ -18,9 +20,17 @@ public class Main {
                 final DatagramPacket packet = new DatagramPacket(buf, buf.length);
                 serverSocket.receive(packet);
                 System.out.println("Received data");
+                final byte[] bufRequest = packet.getData();
+
+                short requestId = ByteBuffer.wrap(bufRequest, 0, 2).getShort();
+
+                byte request_QR_OPCODE_AA_TC_RD = ByteBuffer.wrap(bufRequest, 2, 1).get();
+                boolean error = (request_QR_OPCODE_AA_TC_RD & 0b01111000) > 0;
+                request_QR_OPCODE_AA_TC_RD &= (byte) 0b01111001;
+                request_QR_OPCODE_AA_TC_RD |= (byte) 0b10000000;
 
                 final byte[] bufResponse = DNSMessage.builder()
-                        .writeHeader()
+                        .writeHeader(requestId, request_QR_OPCODE_AA_TC_RD, error)
                         .writeQuestion()
                         .writeQuestion()
                         .build();
@@ -35,8 +45,6 @@ public class Main {
 }
 
 class DNSMessage {
-    private static final short FIELD_ID = 1234;
-    private static final byte FIELD_QR_OPCODE_AA_TC_RD = (byte) 0b10000000;
     private static final byte FIELD_RA_Z_RCODE = 0;
     private static final short FIELD_QDCOUNT = 1;
     private static final short FIELD_ANCOUNT = 1;
@@ -55,10 +63,11 @@ class DNSMessage {
         return new DNSMessage();
     }
 
-    public DNSMessage writeHeader() {
-        this.byteBuffer.putShort(FIELD_ID)
-                .put(FIELD_QR_OPCODE_AA_TC_RD)
-                .put(FIELD_RA_Z_RCODE)
+    public DNSMessage writeHeader(short requestId, byte request_QR_OPCODE_AA_TC_RD, boolean error) {
+        byte field_RA_Z_RCODE = (byte) (error ? 0b00000100 : 0);
+        this.byteBuffer.putShort(requestId)
+                .put(request_QR_OPCODE_AA_TC_RD)
+                .put(field_RA_Z_RCODE)
                 .putShort(FIELD_QDCOUNT)
                 .putShort(FIELD_ANCOUNT)
                 .putShort(FIELD_NSCOUNT)
