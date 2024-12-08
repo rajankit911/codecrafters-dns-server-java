@@ -29,10 +29,27 @@ public class Main {
                 request_QR_OPCODE_AA_TC_RD &= (byte) 0b01111001;
                 request_QR_OPCODE_AA_TC_RD |= (byte) 0b10000000;
 
+                StringBuilder domain = new StringBuilder();
+                int baseOffset = 12;
+                byte len = ByteBuffer.wrap(bufRequest, baseOffset, 1).get();
+                baseOffset += 1;
+                int n = 0;
+                while (len > 0) {
+                    n += len + 1;
+                    byte[] subdomain = ByteBuffer.allocate(len).put(bufRequest, baseOffset, len).array();
+                    domain.append(new String(subdomain)).append(".");
+                    baseOffset += len;
+                    len = ByteBuffer.wrap(bufRequest, baseOffset, 1).get();
+                    baseOffset += 1;
+                }
+
+                String domainName = domain.substring(0, n - 1);
+
+                System.out.println("domain requested: " + domain);
                 final byte[] bufResponse = DNSMessage.builder()
                         .writeHeader(requestId, request_QR_OPCODE_AA_TC_RD, error)
-                        .writeQuestion()
-                        .writeQuestion()
+                        .writeQuestion(domain.toString())
+                        .writeAnswer(domain.toString())
                         .build();
 
                 final DatagramPacket packetResponse = new DatagramPacket(bufResponse, bufResponse.length, packet.getSocketAddress());
@@ -77,22 +94,22 @@ class DNSMessage {
 
     private void encodeDomain(String domain) {
         String[] parts = domain.split("\\.");
-        this.byteBuffer.put((byte) parts[0].length())
-                .put(parts[0].getBytes(StandardCharsets.UTF_8))
-                .put((byte) parts[1].length())
-                .put(parts[1].getBytes(StandardCharsets.UTF_8))
-                .put((byte) 0);
+        for (String part : parts) {
+            this.byteBuffer.put((byte) part.length()).put(part.getBytes(StandardCharsets.UTF_8));
+        }
+
+        this.byteBuffer.put((byte) 0);
     }
 
-    public DNSMessage writeQuestion() {
-        encodeDomain("codecrafters.io");
+    public DNSMessage writeQuestion(String domain) {
+        encodeDomain(domain);
         this.byteBuffer.putShort(FIELD_TYPE)
                 .putShort(FIELD_CLASS);
         return this;
     }
 
-    public DNSMessage writeAnswer(ByteBuffer byteBuffer) {
-        this.writeQuestion();
+    public DNSMessage writeAnswer(String domain) {
+        this.writeQuestion(domain);
         this.byteBuffer.putInt(300)
                 .putShort((short) 4)
                 .put(new byte[] {8, 8, 8, 8});
