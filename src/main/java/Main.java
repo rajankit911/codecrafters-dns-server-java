@@ -3,9 +3,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.ShortBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.BitSet;
+import java.util.StringJoiner;
 
 public class Main {
     public static void main(String[] args) {
@@ -22,34 +21,22 @@ public class Main {
                 System.out.println("Received data");
                 final byte[] bufRequest = packet.getData();
 
-                short requestId = ByteBuffer.wrap(bufRequest, 0, 2).getShort();
+                DNSMessage dnsRequest = new DNSMessage(bufRequest);
+                short requestId = dnsRequest.getRequestId();
+                short reqFlags = dnsRequest.getFlags();
+                short qdcount = dnsRequest.getQdcount();
+                String domain = dnsRequest.getDomain();
 
-                byte request_QR_OPCODE_AA_TC_RD = ByteBuffer.wrap(bufRequest, 2, 1).get();
-                boolean error = (request_QR_OPCODE_AA_TC_RD & 0b01111000) > 0;
-                request_QR_OPCODE_AA_TC_RD &= (byte) 0b01111001;
-                request_QR_OPCODE_AA_TC_RD |= (byte) 0b10000000;
+                int opcode = reqFlags & 0x7800;
+                int rd = reqFlags & 0x0100;
+                int rcode = opcode > 0 ? 4 : 0;
+                short resFlags = (short) (0x8000 | opcode | rd | rcode);
 
-                StringBuilder domain = new StringBuilder();
-                int baseOffset = 12;
-                byte len = ByteBuffer.wrap(bufRequest, baseOffset, 1).get();
-                baseOffset += 1;
-                int n = 0;
-                while (len > 0) {
-                    n += len + 1;
-                    byte[] subdomain = ByteBuffer.allocate(len).put(bufRequest, baseOffset, len).array();
-                    domain.append(new String(subdomain)).append(".");
-                    baseOffset += len;
-                    len = ByteBuffer.wrap(bufRequest, baseOffset, 1).get();
-                    baseOffset += 1;
-                }
-
-                String domainName = domain.substring(0, n - 1);
-
-                System.out.println("domain requested: " + domain);
                 final byte[] bufResponse = DNSMessage.builder()
-                        .writeHeader(requestId, request_QR_OPCODE_AA_TC_RD, error)
-                        .writeQuestion(domain.toString())
-                        .writeAnswer(domain.toString())
+                        .setDomain(domain)
+                        .writeHeader(requestId, resFlags, qdcount)
+                        .writeQuestion()
+                        .writeAnswer()
                         .build();
 
                 final DatagramPacket packetResponse = new DatagramPacket(bufResponse, bufResponse.length, packet.getSocketAddress());
@@ -62,54 +49,121 @@ public class Main {
 }
 
 class DNSMessage {
-    private static final byte FIELD_RA_Z_RCODE = 0;
-    private static final short FIELD_QDCOUNT = 1;
-    private static final short FIELD_ANCOUNT = 1;
-    private static final short FIELD_NSCOUNT = 0;
-    private static final short FIELD_ARCOUNT = 0;
+    private short requestId = 1234;
+    private short flags;
+    private short qdcount = 0;
+    private short ancount = 0;
+    private short nscount = 0;
+    private short arcount = 0;
 
-    private static final short FIELD_TYPE = 1;
-    private static final short FIELD_CLASS = 1;
+    private String domain;
+    private short type = 1;
+    private short qclass = 1;
 
-    private ByteBuffer byteBuffer;
+    private final ByteBuffer byteBuffer;
     private DNSMessage() {
         this.byteBuffer = ByteBuffer.allocate(512).order(ByteOrder.BIG_ENDIAN);
+    }
+
+    public DNSMessage(byte[] message) {
+        this.byteBuffer = ByteBuffer.wrap(message);
+        this.readHeader();
+        this.readQuestion();
+    }
+
+    public short getRequestId() {
+        return this.requestId;
+    }
+
+    public short getFlags() {
+        return this.flags;
+    }
+
+    public short getQdcount() {
+        return this.qdcount;
+    }
+
+    public String getDomain() {
+        return this.domain;
+    }
+
+    public DNSMessage setDomain(String domain) {
+        this.domain = domain;
+        return this;
     }
 
     public static DNSMessage builder() {
         return new DNSMessage();
     }
 
-    public DNSMessage writeHeader(short requestId, byte request_QR_OPCODE_AA_TC_RD, boolean error) {
-        byte field_RA_Z_RCODE = (byte) (error ? 0b00000100 : 0);
-        this.byteBuffer.putShort(requestId)
-                .put(request_QR_OPCODE_AA_TC_RD)
-                .put(field_RA_Z_RCODE)
-                .putShort(FIELD_QDCOUNT)
-                .putShort(FIELD_ANCOUNT)
-                .putShort(FIELD_NSCOUNT)
-                .putShort(FIELD_ARCOUNT);
+    private void readHeader() {
+        this.requestId = this.byteBuffer.getShort();
+        this.flags = this.byteBuffer.getShort();
+        this.qdcount = this.byteBuffer.getShort();
+        this.ancount = this.byteBuffer.getShort();
+        this.nscount = this.byteBuffer.getShort();
+        this.arcount = this.byteBuffer.getShort();
+    }
+
+    private void readQuestion() {
+        for (int i = 0; i < this.qdcount; i++) {
+            this.domain = this.decodeDomain();
+            this.type = this.byteBuffer.getShort();
+            this.qclass = this.byteBuffer.getShort();
+        }
+    }
+
+    private String decodeDomain() {
+        StringJoiner domain = new StringJoiner(".");
+        byte len;
+        while ((len = this.byteBuffer.get()) > 0) {
+            byte[] dst = new byte[len];
+            this.byteBuffer.get(dst);
+            domain.add(new String(dst));
+        }
+
+        System.out.println("domain requested: " + domain);
+        return domain.toString();
+    }
+
+    public DNSMessage writeHeader(short requestId, short flags, short qdcount) {
+        this.requestId = requestId;
+        this.flags = flags;
+        this.qdcount = qdcount;
+        this.ancount = qdcount;
+
+        this.byteBuffer.putShort(this.requestId)
+                .putShort(this.flags)
+                .putShort(this.qdcount)
+                .putShort(this.ancount)
+                .putShort(this.nscount)
+                .putShort(this.arcount);
+
         return this;
     }
 
-    private void encodeDomain(String domain) {
-        String[] parts = domain.split("\\.");
+    private void encodeDomain() {
+        String[] parts = this.domain.split("\\.");
         for (String part : parts) {
-            this.byteBuffer.put((byte) part.length()).put(part.getBytes(StandardCharsets.UTF_8));
+            this.byteBuffer.put((byte) part.length())
+                    .put(part.getBytes(StandardCharsets.UTF_8));
         }
 
         this.byteBuffer.put((byte) 0);
     }
 
-    public DNSMessage writeQuestion(String domain) {
-        encodeDomain(domain);
-        this.byteBuffer.putShort(FIELD_TYPE)
-                .putShort(FIELD_CLASS);
+    public DNSMessage writeQuestion() {
+        for (int i = 0; i < this.qdcount; i++) {
+            this.encodeDomain();
+            this.byteBuffer.putShort(type)
+                    .putShort(qclass);
+        }
+
         return this;
     }
 
-    public DNSMessage writeAnswer(String domain) {
-        this.writeQuestion(domain);
+    public DNSMessage writeAnswer() {
+        this.writeQuestion();
         this.byteBuffer.putInt(300)
                 .putShort((short) 4)
                 .put(new byte[] {8, 8, 8, 8});
@@ -119,4 +173,5 @@ class DNSMessage {
     public byte[] build() {
         return this.byteBuffer.array();
     }
+
 }
