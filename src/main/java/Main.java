@@ -1,15 +1,27 @@
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.StringJoiner;
 
 public class Main {
     public static void main(String[] args) {
         // You can use print statements as follows for debugging, they'll be visible when running tests.
         System.out.println("Logs from your program will appear here!");
+
+        String[] resolverFlag = args[1].split(":");
+        String resolverIP = resolverFlag[0];
+        int resolverPort = Integer.parseInt(resolverFlag[1]);
+        SocketAddress resolverAddress = new InetSocketAddress(resolverIP, resolverPort);
 
         // Uncomment this block to pass the first stage
 
@@ -25,7 +37,27 @@ public class Main {
                 short requestId = dnsRequest.getRequestId();
                 short reqFlags = dnsRequest.getFlags();
                 short qdcount = dnsRequest.getQdcount();
-                String domain = dnsRequest.getDomain();
+                List<String> domains = dnsRequest.getDomains();
+                Map<String, byte[]> addressByDomainMap = new HashMap<>();
+
+                for (String domain : domains) {
+                    byte[] forwardRequestBuf = DNSMessage.builder()
+                            .setDomains(Collections.singletonList(domain))
+                            .writeHeader(requestId, reqFlags, (short) 1, (short) 0)
+                            .writeQuestion()
+                            .build();
+
+                    DatagramPacket forwardRequestPacket =  new DatagramPacket(forwardRequestBuf, forwardRequestBuf.length, resolverAddress);
+                    serverSocket.send(forwardRequestPacket);
+
+                    byte [] forwardResponseBuf = new byte[512];
+                    DatagramPacket forwardResponsePacket = new DatagramPacket(forwardResponseBuf, forwardResponseBuf.length);
+                    serverSocket.receive(forwardResponsePacket);
+
+                    DNSMessage forwardResponse = new DNSMessage(forwardResponseBuf);
+                    byte[] ip = forwardResponse.getResolvedAddress();
+                    addressByDomainMap.put(domain, ip);
+                }
 
                 int opcode = reqFlags & 0x7800;
                 int rd = reqFlags & 0x0100;
@@ -33,8 +65,9 @@ public class Main {
                 short resFlags = (short) (0x8000 | opcode | rd | rcode);
 
                 final byte[] bufResponse = DNSMessage.builder()
-                        .setDomain(domain)
-                        .writeHeader(requestId, resFlags, qdcount)
+                        .setDomains(domains)
+                        .setAddressByDomainMap(addressByDomainMap)
+                        .writeHeader(requestId, resFlags, qdcount, qdcount)
                         .writeQuestion()
                         .writeAnswer()
                         .build();
@@ -56,11 +89,13 @@ class DNSMessage {
     private short nscount = 0;
     private short arcount = 0;
 
-    private String domain;
     private short type = 1;
     private short qclass = 1;
 
+    private List<String> domains;
+    private Map<String, byte[]> addressByDomainMap;
     private final ByteBuffer byteBuffer;
+
     private DNSMessage() {
         this.byteBuffer = ByteBuffer.allocate(512).order(ByteOrder.BIG_ENDIAN);
     }
@@ -83,12 +118,17 @@ class DNSMessage {
         return this.qdcount;
     }
 
-    public String getDomain() {
-        return this.domain;
+    public List<String> getDomains() {
+        return this.domains;
     }
 
-    public DNSMessage setDomain(String domain) {
-        this.domain = domain;
+    public DNSMessage setDomains(List<String> domains) {
+        this.domains = domains;
+        return this;
+    }
+
+    public DNSMessage setAddressByDomainMap (Map<String, byte[]> addressByDomainMap) {
+        this.addressByDomainMap = addressByDomainMap;
         return this;
     }
 
@@ -103,14 +143,27 @@ class DNSMessage {
         this.ancount = this.byteBuffer.getShort();
         this.nscount = this.byteBuffer.getShort();
         this.arcount = this.byteBuffer.getShort();
+        this.domains = new ArrayList<>(this.qdcount);
     }
 
     private void readQuestion() {
         for (int i = 0; i < this.qdcount; i++) {
-            this.domain = this.decodeDomain();
+            this.domains.add(this.decodeDomain());
             this.type = this.byteBuffer.getShort();
             this.qclass = this.byteBuffer.getShort();
         }
+    }
+
+    public byte[] getResolvedAddress() {
+        this.decodeDomain();
+        this.byteBuffer.getShort(); // TYPE
+        this.byteBuffer.getShort(); // CLASS
+        this.byteBuffer.getInt(); // TTL
+        this.byteBuffer.getShort(); // RDATA Length
+
+        byte[] ip = new byte[4];
+        this.byteBuffer.get(ip);
+        return ip;
     }
 
     private String decodeDomain() {
@@ -126,11 +179,11 @@ class DNSMessage {
         return domain.toString();
     }
 
-    public DNSMessage writeHeader(short requestId, short flags, short qdcount) {
+    public DNSMessage writeHeader(short requestId, short flags, short qdcount, short ancount) {
         this.requestId = requestId;
         this.flags = flags;
         this.qdcount = qdcount;
-        this.ancount = qdcount;
+        this.ancount = ancount;
 
         this.byteBuffer.putShort(this.requestId)
                 .putShort(this.flags)
@@ -142,8 +195,8 @@ class DNSMessage {
         return this;
     }
 
-    private void encodeDomain() {
-        String[] parts = this.domain.split("\\.");
+    private void encodeDomain(String domain) {
+        String[] parts = domain.split("\\.");
         for (String part : parts) {
             this.byteBuffer.put((byte) part.length())
                     .put(part.getBytes(StandardCharsets.UTF_8));
@@ -153,8 +206,8 @@ class DNSMessage {
     }
 
     public DNSMessage writeQuestion() {
-        for (int i = 0; i < this.qdcount; i++) {
-            this.encodeDomain();
+        for (String domain : this.domains) {
+            this.encodeDomain(domain);
             this.byteBuffer.putShort(type)
                     .putShort(qclass);
         }
@@ -163,10 +216,17 @@ class DNSMessage {
     }
 
     public DNSMessage writeAnswer() {
-        this.writeQuestion();
-        this.byteBuffer.putInt(300)
-                .putShort((short) 4)
-                .put(new byte[] {8, 8, 8, 8});
+        for (String domain : this.domains) {
+            // question section
+            this.encodeDomain(domain);
+            this.byteBuffer.putShort(type)
+                    .putShort(qclass);
+            // answer section
+            this.byteBuffer.putInt(300)
+                    .putShort((short) 4)
+                    .put(addressByDomainMap.get(domain));
+        }
+
         return this;
     }
 
